@@ -1,0 +1,35 @@
+apiVersion: kubeadm.k8s.io/v1beta2
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: "{{ lb_address }}"
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd
+serverTLSBootstrap: true
+---
+apiVersion: kubeadm.k8s.io/v1beta2
+kind: ClusterConfiguration
+etcd:
+  external:
+    endpoints:
+{% for host in groups['kuber_masters'] %}
+      - https://{{ hostvars[host]['ansible_host'] }}:2379
+{% endfor %}
+    caFile: "{{ etcd_ssl_ca_crt }}"
+    certFile: "{{ etcd_ssl_client_crt }}"
+    keyFile: "{{ etcd_ssl_client_key }}"
+networking:
+  serviceSubnet: "{{ service_subnet }}"
+  podSubnet: "{{ pod_subnet }}"
+  dnsDomain: "{{ dns_domain }}"
+apiServer:
+  certSANs:
+    - "127.0.0.1"
+{% for host in groups['kuber_masters'] %}
+    - "{{ hostvars[host]['ansible_host'] }}"
+{% endfor %}
+{% for host in groups['kuber_masters'] %}
+    - "{{ hostvars[host]['ansible_hostname'] }}"
+{% endfor %}
+    - "{{ lb_address }}"

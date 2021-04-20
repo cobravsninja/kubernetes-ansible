@@ -1,0 +1,17 @@
+data-dir: {{ etcd_data_dir_hostname }}
+name: {{ inventory_hostname }}
+initial-advertise-peer-urls: https://{{ hostvars[inventory_hostname]['ansible_host'] }}:{{ etcd_server_port }}
+listen-peer-urls: https://{{ hostvars[inventory_hostname]['ansible_host'] }}:{{ etcd_server_port }},https://127.0.0.1:{{ etcd_server_port }}
+advertise-client-urls: https://{{ hostvars[inventory_hostname]['ansible_host'] }}:{{ etcd_client_port }}
+listen-client-urls: https://{{ hostvars[inventory_hostname]['ansible_host'] }}:{{ etcd_client_port }},https://127.0.0.1:{{ etcd_client_port }}
+initial-cluster-state: new
+initial-cluster: {% for host in groups['kuber_masters'] %}{{ hostvars[host]['ansible_facts']['hostname'] }}=https://{{ hostvars[host]['ansible_host'] }}:{{ etcd_server_port }}{% if not loop.last %},{% endif %}{% endfor %}
+
+client-transport-security:
+  cert-file: {{ etcd_ssl_server_crt }}
+  key-file: {{ etcd_ssl_server_key }}
+  trusted-ca-file: {{ etcd_ssl_ca_crt }}
+peer-transport-security:
+  cert-file: {{ etcd_ssl_server_crt }}
+  key-file: {{ etcd_ssl_server_key }}
+  trusted-ca-file: {{ etcd_ssl_ca_crt }}

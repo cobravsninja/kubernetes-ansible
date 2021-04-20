@@ -1,0 +1,529 @@
+# part1, generating etcd keys
+# Thanks to DO for awesome etcd manual https://www.digitalocean.com/community/tutorials/how-to-set-up-and-secure-an-etcd-cluster-with-ansible-on-ubuntu-18-04
+- hosts: localhost
+  gather_facts: False
+  become: False
+  any_errors_fatal: True
+  tasks:
+    - name: Create ./artificats directory to house keys and certificates
+      file:
+        path: "{{ artifacts_dir }}"
+        state: directory
+
+    - name: Generate private key for CA
+      openssl_privatekey:
+        path: "{{ etcd_ca_key_file }}"
+        type: RSA
+        size: 4096
+        state: present
+        force: True
+
+    - name: Generate CSR for CA
+      openssl_csr:
+        path: "{{ etcd_ca_csr_file }}"
+        privatekey_path: "{{ etcd_ca_key_file }}"
+        common_name: ca
+        organization_name: "Etcd CA"
+        basic_constraints:
+          - CA:TRUE
+          - pathlen:1
+        basic_constraints_critical: True
+        key_usage:
+          - keyCertSign
+          - digitalSignature
+        force: True
+
+    - name: Generate self-signed CA certificate
+      openssl_certificate:
+        path: "{{ etcd_ca_crt_file }}"
+        privatekey_path: "{{ etcd_ca_key_file }}"
+        csr_path: "{{ etcd_ca_csr_file }}"
+        provider: selfsigned
+        force: True
+
+    - name: Generate server private key for each member
+      openssl_privatekey:
+        path: "{{ artifacts_dir }}/{{ item }}.key"
+        type: RSA
+        size: 4096
+        state: present
+        force: True
+      with_items: "{{ groups['kuber_masters'] }}"
+
+    - name: Generate client private key (kuber nodes, calico)
+      openssl_privatekey:
+        path: "{{ etcd_client_key_file }}"
+        type: RSA
+        size: 4096
+        state: present
+        force: True
+
+    - name: Generate server CSR for each member
+      openssl_csr:
+        path: "{{ artifacts_dir }}/{{ item }}.csr"
+        privatekey_path: "{{ artifacts_dir }}/{{ item }}.key"
+        common_name: "{{ item }}"
+        key_usage:
+          - digitalSignature
+        extended_key_usage:
+          - serverAuth
+        subject_alt_name:
+          - IP:{{ hostvars[item]['ansible_host'] }}
+          - IP:127.0.0.1
+        force: True
+      with_items: "{{ groups['kuber_masters'] }}"
+
+    - name: Generate client CSR
+      openssl_csr:
+        path: "{{ etcd_client_csr_file }}"
+        privatekey_path: "{{ etcd_client_key_file }}"
+        key_usage:
+          - digitalSignature
+        extended_key_usage:
+          - serverAuth
+        force: True
+
+    - name: Generate an etcd member certificate signed with our own CA certificate
+      openssl_certificate:
+        path: "{{ artifacts_dir }}/{{ item }}.crt"
+        csr_path: "{{ artifacts_dir }}/{{ item }}.csr"
+        ownca_path: "{{ etcd_ca_crt_file }}"
+        ownca_privatekey_path: "{{ etcd_ca_key_file }}"
+        provider: ownca
+        force: True
+      with_items: "{{ groups['kuber_masters'] }}"
+
+    - name: Generate a client certificate signed with our own CA certificate
+      openssl_certificate:
+        path: "{{ etcd_client_crt_file }}"
+        csr_path: "{{ etcd_client_csr_file }}"
+        ownca_path: "{{ etcd_ca_crt_file }}"
+        ownca_privatekey_path: "{{ etcd_ca_key_file }}"
+        provider: ownca
+        force: True
+
+# part2 installing necessary packages
+- hosts: kuber_nodes:kuber_masters
+  any_errors_fatal: True
+  vars:
+    k8s_packages:
+      - kubectl
+      - kubelet
+      - kubeadm
+    containerd_package: containerd.io
+
+  tasks:
+    - name: Update apt repo and cache
+      apt: update_cache=yes force_apt_get=yes
+
+    - name: Upgrade all packages on servers
+      apt: upgrade=dist force_apt_get=yes
+
+    - name: Copy bash_profile
+      copy:
+        src: files/bash_profile
+        dest: /root/.bash_profile
+        owner: root
+        group: root
+        mode: 0644
+
+    - name: Copy vimrc
+      copy:
+        src: files/vimrc
+        remote_src: False
+        dest: /root/.vimrc
+        owner: root
+        group: root
+        mode: 0644
+
+    - name: Append all hosts to /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ item }}    {{ hostvars[item]['ansible_host'] }}"
+        insertafter: EOF
+      with_items: 
+        - "{{ groups['kuber_nodes'] }}"
+        - "{{ groups['kuber_masters'] }}"
+
+    - name: Installing necessary packages
+      apt: 
+        pkg:
+          - curl
+          - tcpdump
+          - vim
+          - htop
+          - tmux
+          - iptraf-ng
+          - apt-transport-https
+          - gnupg2
+          - software-properties-common
+          - rsync
+          - sysstat
+          - chrony
+
+    - name: containerd necessary modules and settings
+      shell: |
+        set -e
+        echo overlay > /etc/modules-load.d/containerd.conf
+        echo br_netfilter >> /etc/modules-load.d/containerd.conf
+        modprobe overlay
+        modprobe br_netfilter
+        echo 'net.bridge.bridge-nf-call-iptables  = 1' > /etc/sysctl.d/99-kubernetes-cri.conf
+        echo 'net.ipv4.ip_forward = 1' >> /etc/sysctl.d/99-kubernetes-cri.conf
+        echo 'net.bridge.bridge-nf-call-ip6tables = 1' >> /etc/sysctl.d/99-kubernetes-cri.conf
+        sysctl --system
+        sed -i 's/GRUB_CMDLINE_LINUX=.*/GRUB_CMDLINE_LINUX="cgroup_enable=memory swapaccount=1 cgroup_memory=1 cgroup_enable=cpuset net.ifnames=0 biosdevname=0"/' /etc/default/grub
+        update-grub
+      register: output
+    - debug: var=output.stdout_lines
+
+    - name: containerd itself
+      shell: |
+        curl -fsSL https://download.docker.com/linux/debian/gpg | apt-key --keyring /etc/apt/trusted.gpg.d/docker.gpg add - &&
+        add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/debian $(lsb_release -cs) stable" && apt update
+      register: output
+    - debug: var=output.stdout_lines
+
+    - name: Installing containerd
+      apt: "pkg={{ containerd_package }}"
+
+    - name: Holding containerd
+      dpkg_selections:
+        name: "{{ containerd_package }}"
+        selection: hold
+
+    - name: Set default containerd configuration
+      shell: |
+        set -e
+        mkdir -p /etc/containerd
+        containerd config default | tee /etc/containerd/config.toml
+        sed -i '/plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options/ a\             SystemdCgroup = true' /etc/containerd/config.toml
+        systemctl restart containerd
+      register: output
+    - debug: var=output.stdout_lines
+
+    - name: Get & update kubectl repo
+      shell: |
+        curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add - &&
+        echo "deb https://apt.kubernetes.io/ kubernetes-xenial main" > /etc/apt/sources.list.d/kubernetes.list &&
+        apt update
+      register: output
+    - debug: var=output.stdout_lines
+
+    - name: Installing k8s-packages
+      apt: 
+        pkg: "{{ k8s_packages }}"
+
+    - name: Holding k8s-packages
+      dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      with_items: 
+        - "{{ k8s_packages }}"
+        - kubernetes-cni
+
+    - name: Check if a reboot is needed on all servers
+      register: reboot_required_file
+      stat: path=/var/run/reboot-required get_md5=no
+
+    - name: Reboot the box if kernel updated
+      reboot:
+        msg: "Reboot initiated by Ansible for kernel updates"
+        connect_timeout: 5
+        reboot_timeout: 300
+        pre_reboot_delay: 0
+        post_reboot_delay: 30
+        test_command: uptime
+      when: reboot_required_file.stat.exists
+
+# part3 installing etcd & kuber
+- hosts: kuber_masters
+  any_errors_fatal: True
+  vars:
+    etcd_ver: v3.2.32
+    etcd_bin_dir: /opt/etcd/bin/
+    etcd_data_dir: /var/lib/etcd
+    etcd_data_dir_hostname: "{{ etcd_data_dir }}/{{ inventory_hostname }}"
+    etcd_server_port: 2380
+    etcd_client_port: 2379
+    etcd_conf_dir: /etc/etcd
+    etcd_ssl_dir: "{{ etcd_conf_dir }}/ssl"
+    etcd_ssl_ca_crt: "{{ etcd_ssl_dir }}/ca.crt"
+    etcd_ssl_server_crt: "{{ etcd_ssl_dir }}/server.crt"
+    etcd_ssl_server_key: "{{ etcd_ssl_dir }}/server.key"
+    etcd_ssl_client_crt: "{{ etcd_ssl_dir }}/client.crt"
+    etcd_ssl_client_key: "{{ etcd_ssl_dir }}/client.key"
+    calico_etcd_yaml_url: https://docs.projectcalico.org/manifests/calico-etcd.yaml
+    calico_etcd_yaml: /root/calico-etcd.yaml
+    calicoctl_ver: v3.18.1
+    tmp_file: /tmp/etcd.tar.gz
+    kuber_etc_dir: /etc/kubernetes
+    kuber_pki_dir: "{{ kuber_etc_dir }}/pki"
+    kuber_admin_conf: "{{ kuber_etc_dir }}/admin.conf"
+    kuber_init_yaml: /root/kuber_init.yaml
+    kuber_init_log: "/root/kuber_init_{{ inventory_hostname }}.log"
+    lb_address: 192.168.161.199
+    lb_mask: 24
+    service_subnet: 10.96.0.0/12
+    pod_subnet: 10.250.0.0/16
+    dns_domain: cluster.local
+    artifacts_pki_dir: "{{ artifacts_dir }}/kubernetes_pki"
+    root_bin: /root/bin
+
+  tasks:
+    - name: Create directory for etcd binaries
+      file:
+        path: "{{ etcd_bin_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: 0700
+
+    - name: Download the tarball into the /tmp directory
+      get_url:
+        url: "https://github.com/etcd-io/etcd/releases/download/{{ etcd_ver }}/etcd-{{ etcd_ver }}-linux-amd64.tar.gz"
+        dest: "{{ tmp_file }}"
+        owner: root
+        group: root
+        mode: 0600
+        force: True
+
+    - name: Extract the contents of the tarball
+      unarchive:
+        src: "{{ tmp_file }}"
+        dest: "{{ etcd_bin_dir }}"
+        owner: root
+        group: root
+        mode: 0600
+        extra_opts:
+          - --strip-components=1
+        decrypt: True
+        remote_src: True
+
+    - name: Set permissions for etcd
+      file:
+        path: "{{ etcd_bin_dir }}/etcd"
+        state: file
+        owner: root
+        group: root
+        mode: 0700
+
+    - name: Set permissions for etcdctl
+      file:
+        path: "{{ etcd_bin_dir }}/etcdctl"
+        state: file
+        owner: root
+        group: root
+        mode: 0700
+
+    - name: Create etcd service
+      template:
+        src: templates/etcd.service.j2
+        dest: /etc/systemd/system/etcd.service
+        owner: root
+        group: root
+        mode: 0644
+
+    - name: Stop etcd service
+      command: systemctl stop etcd
+
+    - name: Create etcd data directory
+      file:
+        path: "{{ etcd_data_dir_hostname }}"
+        state: "{{ item }}"
+        owner: root
+        group: root
+        mode: 0755
+      with_items:
+        - absent
+        - directory
+
+    - name: Create directory for etcd configuration
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: 0755
+      with_items:
+        - "{{ etcd_conf_dir }}"
+        - "{{ etcd_ssl_dir }}"
+
+    - name: Copy over the CA certificate
+      copy:
+        src: "{{ etcd_ca_crt_file }}"
+        remote_src: False
+        dest: "{{ etcd_ssl_ca_crt }}"
+        owner: root
+        group: root
+        mode: 0644
+
+    - name: Copy over the `etcd` member certificate
+      copy:
+        src: "{{ artifacts_dir }}/{{inventory_hostname}}.crt"
+        remote_src: False
+        dest: "{{ etcd_ssl_server_crt }}"
+        owner: root
+        group: root
+        mode: 0644
+
+    - name: Copy over the `etcd` member key
+      copy:
+        src: "{{ artifacts_dir }}/{{inventory_hostname}}.key"
+        remote_src: False
+        dest: "{{ etcd_ssl_server_key }}"
+        owner: root
+        group: root
+        mode: 0600
+
+    - name: Copy over the `etcd` client certificate
+      copy:
+        src: "{{ etcd_client_crt_file }}"
+        remote_src: False
+        dest: "{{ etcd_ssl_client_crt }}"
+        owner: root
+        group: root
+        mode: 0644
+
+    - name: Copy over the `etcd` client key
+      copy:
+        src: "{{ etcd_client_key_file }}"
+        remote_src: False
+        dest: "{{ etcd_ssl_client_key }}"
+        owner: root
+        group: root
+        mode: 0600
+
+    - name: Create configuration file for etcd
+      template:
+        src: templates/etcd.conf.yaml.j2
+        dest: "{{ etcd_conf_dir }}/etcd.conf.yaml"
+        owner: root
+        group: root
+        mode: 0600
+
+    - name: Enable the etcd service
+      command: systemctl enable etcd
+
+    - name: Start the etcd service
+      command: systemctl restart etcd
+
+    - name: Create lb interface on 1st node
+      template:
+        src: templates/lb_if.j2
+        dest: /etc/network/interfaces.d/
+      when: inventory_hostname == groups['kuber_masters'][0]
+
+    - name: Activate lb IP
+      shell: ifup eth0:0
+      when: inventory_hostname == groups['kuber_masters'][0]
+
+    - name: Copy kuber_init.yaml
+      template:
+        src: templates/kuber_init.yaml.j2
+        dest: "{{ kuber_init_yaml }}"
+        owner: root
+        group: root
+
+    - name: Install kubernetes on 1st node
+      shell: bash -c 'set -e; set -o pipefail; kubeadm init --config "{{ kuber_init_yaml }}" 2>&1 | tee "{{ kuber_init_log }}"'
+      when: inventory_hostname == groups['kuber_masters'][0]
+      register: output
+    - debug: var=output.stdout_lines
+
+    - name: Get & update calico yaml on first master
+      shell: |
+        curl -so "{{ calico_etcd_yaml }}" "{{ calico_etcd_yaml_url }}" &&
+        sed -ri "s/# (etcd-key:) null/\1 $(cat {{ etcd_ssl_client_key }}| base64 -w 0)/" "{{ calico_etcd_yaml }}" &&
+        sed -ri "s/# (etcd-cert:) null/\1 $(cat {{ etcd_ssl_client_crt }} | base64 -w 0)/" "{{ calico_etcd_yaml }}" &&
+        sed -ri "s/# (etcd-ca:) null/\1 $(cat {{ etcd_ssl_ca_crt }} | base64 -w 0)/" "{{ calico_etcd_yaml }}" &&
+        sed -ri "s#(etcd_endpoints:) \"http:.+#\1 {% for host in groups['kuber_masters'] %}https://{{ hostvars[host]['ansible_host'] }}:{{ etcd_client_port }}{% if not loop.last %},{% endif %}{% endfor %}#" "{{ calico_etcd_yaml }}" &&
+        sed -ri 's#(etcd_ca: ).+("/calico-secrets/etcd-ca")#\1\2#' "{{ calico_etcd_yaml }}" &&
+        sed -ri 's#(etcd_cert: ).+("/calico-secrets/etcd-cert")#\1\2#' "{{ calico_etcd_yaml }}" &&
+        sed -ri 's#(etcd_key: ).+("/calico-secrets/etcd-key")#\1\2#' "{{ calico_etcd_yaml }}" &&
+        sed -ri 's/(defaultMode:) 0400/\1 0440/' "{{ calico_etcd_yaml }}" &&
+        sed -ri 's/Always/CrossSubnet/' "{{ calico_etcd_yaml }}"
+      when: inventory_hostname == groups['kuber_masters'][0]
+      register: output
+    - debug: var=output.stdout_lines
+
+    - name: Applying calico on 1st node
+      shell: export KUBECONFIG="{{ kuber_admin_conf }}" && kubectl apply -f "{{ calico_etcd_yaml }}"
+      when: inventory_hostname == groups['kuber_masters'][0]
+      register: output
+    - debug: var=output.stdout_lines
+
+    - name: Copy PKI folder from 1st master
+      synchronize:
+        src: "{{ kuber_pki_dir }}/"
+        dest: "{{ artifacts_pki_dir }}"
+        mode: pull
+      when: inventory_hostname == groups['kuber_masters'][0]
+
+    - name: Copy PKI folder to other masters
+      synchronize:
+        src: "{{ artifacts_pki_dir }}/"
+        dest: "{{ kuber_pki_dir }}"
+      when: inventory_hostname != groups['kuber_masters'][0]
+
+    - name: Install kubernetes on other masters
+      shell: bash -c 'set -e; set -o pipefail; kubeadm init --config "{{ kuber_init_yaml }}" 2>&1 | tee "{{ kuber_init_log }}"'
+      when: inventory_hostname != groups['kuber_masters'][0]
+      register: output
+    - debug: var=output.stdout_lines
+
+    - name: Copy kuber_init_log
+      fetch:
+        src: "{{ kuber_init_log }}"
+        dest: "{{ log_dir }}"
+        flat: True
+
+    - name: Copy admin.conf
+      fetch:
+        src: "{{ kuber_admin_conf }}"
+        dest: "{{ artifacts_pki_dir }}/"
+        flat: True
+      when: inventory_hostname == groups['kuber_masters'][0]
+
+    - name: Add kuber additions to bash_profile
+      blockinfile:
+        path: /root/.bash_profile
+        block: "{{ lookup('template', 'templates/kuber_additions_for_bash_profile.j2') }}"
+
+    - name: Create {{ root_bin }}
+      file:
+        path: "{{ root_bin }}"
+        state: directory
+        owner: root
+        group: root
+        mode: 0700
+
+    - name: Download calicoctl
+      get_url:
+        url: "https://github.com/projectcalico/calicoctl/releases/download/{{ calicoctl_ver }}/calicoctl"
+        dest: "{{ root_bin }}"
+        owner: root
+        group: root
+        mode: 0700
+        force: True
+
+    - name: Get kubeadm join command for nodes
+      shell: fgrep 'kubeadm join' -A 1 "{{ kuber_init_log }}"
+      register: kubeadm_join_output
+      when: inventory_hostname == groups['kuber_masters'][0]
+
+- hosts: kuber_nodes
+  vars:
+    kuber_join_log: "/root/kuber_join_{{ inventory_hostname }}.log"
+
+  tasks: 
+    - name: Join nodes to the cluster
+      shell: bash -c "set -e; set -o pipefail; {{ hostvars[groups['kuber_masters'][0]]['kubeadm_join_output']['stdout'] }} 2>&1 | tee '{{ kuber_join_log }}'"
+      register: output
+    - debug: var=output.stdout_lines
+
+    - name: Copy kuber_join log
+      fetch:
+        src: "{{ kuber_join_log }}"
+        dest: "{{ log_dir }}"
+        flat: True

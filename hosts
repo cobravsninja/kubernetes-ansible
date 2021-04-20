@@ -1,0 +1,18 @@
+[all:vars]
+artifacts_dir=./artifacts
+log_dir="{{ artifacts_dir }}/log/"
+etcd_ca_key_file="{{ artifacts_dir }}/ca.key"
+etcd_ca_csr_file="{{ artifacts_dir }}/ca.csr"
+etcd_ca_crt_file="{{ artifacts_dir }}/ca.crt"
+etcd_client_key_file="{{ artifacts_dir }}/client.key"
+etcd_client_csr_file="{{ artifacts_dir }}/client.csr"
+etcd_client_crt_file="{{ artifacts_dir }}/client.crt"
+
+[kuber_masters]
+newmaster1 ansible_host=192.168.161.191 ansible_user=root
+newmaster2 ansible_host=192.168.161.192 ansible_user=root
+newmaster3 ansible_host=192.168.161.193 ansible_user=root
+
+[kuber_nodes]
+newnode1 ansible_host=192.168.161.221 ansible_user=root
+newnode2 ansible_host=192.168.161.222 ansible_user=root

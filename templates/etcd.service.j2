@@ -1,0 +1,13 @@
+[Unit]
+Description=etcd distributed reliable key-value store
+Conflicts=etcd.service
+After=network.target
+
+[Service]
+Type=notify
+ExecStart=/opt/etcd/bin/etcd --config-file {{ etcd_conf_dir }}/etcd.conf.yaml
+Restart=always
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,55 @@
+syntax on
+set term=xterm
+set nocompatible              " be iMproved, required
+"filetype off                  " required
+"filetype plugin indent on
+:set t_te=
+
+"map ctrl line numbers
+:nmap <C-N><C-N> :set invnumber<CR>
+
+"show line numbers
+set number
+
+" Real programmers don't use TABs but spaces
+set tabstop=2
+set softtabstop=2
+set shiftwidth=2
+set shiftround
+set expandtab
+
+" Make search case insensitive
+set hlsearch
+set incsearch
+set ignorecase
+set smartcase
+
+" paste/nopaste
+map <F3> :set paste<CR>
+map <F4> :set nopaste<CR>
+
+" fast quit
+:nmap qq :qa<CR>
+
+" TlistToggle
+nnoremap <silent> <F8> :TlistToggle<CR>
+
+" noh
+:nmap no :noh<CR>
+:set background=dark
+
+nnoremap <C-Left> :tabprevious<CR>
+nnoremap <C-Right> :tabnext<CR>
+"nnoremap <C-Tab> :tabs<CR>
+nnoremap <silent> <A-Left> :execute 'silent! tabmove ' . (tabpagenr()-2)<CR>
+nnoremap <silent> <A-Right> :execute 'silent! tabmove ' . (tabpagenr()+1)<CR>
+
+:nnoremap T :Texplore<CR>
+:nnoremap E :Explore<CR>
+:nnoremap S :Sexplore<CR>
+
+" -- core
+set autoindent
+set smartindent
+
+autocmd FileType python set shiftwidth=2 tabstop=2 expandtab

@@ -1,0 +1,19 @@
+export KUBECONFIG=/etc/kubernetes/admin.conf
+alias k=kubectl
+source <(kubectl completion bash)
+source <(kubectl completion bash | sed s/kubectl/k/g)
+
+alias kcd='kubectl config set-context $(kubectl config current-context) --namespace '
+
+# etcd stuff
+export PATH="$PATH:{{ etcd_bin_dir }}"
+export ETCDCTL_API=3
+alias e='etcdctl --endpoints=https://127.0.0.1:2379 --cacert={{ etcd_ssl_ca_crt }} --cert={{ etcd_ssl_client_crt }} --key={{ etcd_ssl_client_key }} '
+
+# calico
+export PATH=$PATH:~/bin
+export ETCD_ENDPOINTS=https://127.0.0.1:2379
+export ETCD_KEY_FILE={{ etcd_ssl_client_key }}
+export ETCD_CERT_FILE={{ etcd_ssl_client_crt }}
+export ETCD_CA_CERT_FILE={{ etcd_ssl_ca_crt }}
+alias c='calicoctl'
