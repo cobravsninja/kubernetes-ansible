@@ -161,6 +161,7 @@
           - sysstat
           - chrony
 
+    # WARNING! This task could change old interfaces names to old linux interfaces names (eth0, eth1...). Check your interfaces config pls
     - name: containerd necessary modules and settings
       shell: |
         set -e
@@ -527,3 +528,10 @@
         src: "{{ kuber_join_log }}"
         dest: "{{ log_dir }}"
         flat: True
+
+- hosts: "{{ groups['kuber_masters'][0] }}"
+  tasks:
+    - name: Approving CSR requests (kubelet)
+      shell: bash -c "source /root/.bash_profile; kubectl get csr | grep Pending | awk '{print \$1}' | xargs kubectl certificate approve"
+      register: output
+    - debug: var=output.stdout_lines
