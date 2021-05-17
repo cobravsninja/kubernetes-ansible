@@ -139,7 +139,7 @@
     - name: Append all hosts to /etc/hosts
       lineinfile:
         path: /etc/hosts
-        line: "{{ item }}    {{ hostvars[item]['ansible_host'] }}"
+        line: "{{ hostvars[item]['ansible_host'] }}    {{ item }}"
         insertafter: EOF
       with_items: 
         - "{{ groups['kuber_nodes'] }}"
@@ -160,6 +160,7 @@
           - rsync
           - sysstat
           - chrony
+          - ipvsadm
 
     # WARNING! This task could change old interfaces names to old linux interfaces names (eth0, eth1...). Check your interfaces config pls
     - name: containerd necessary modules and settings

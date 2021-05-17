@@ -3,10 +3,19 @@ kind: InitConfiguration
 localAPIEndpoint:
   advertiseAddress: "{{ lb_address }}"
 ---
+apiVersion: kubeproxy.config.k8s.io/v1alpha1
+kind: KubeProxyConfiguration
+mode: ipvs
+---
 apiVersion: kubelet.config.k8s.io/v1beta1
 kind: KubeletConfiguration
 cgroupDriver: systemd
 serverTLSBootstrap: true
+containerLogMaxSize: 10Mi
+containerLogMaxFiles: 3
+rotateCertificates: true
+featureGates:
+  RotateKubeletServerCertificate: true
 ---
 apiVersion: kubeadm.k8s.io/v1beta2
 kind: ClusterConfiguration
@@ -33,3 +42,6 @@ apiServer:
     - "{{ hostvars[host]['ansible_hostname'] }}"
 {% endfor %}
     - "{{ lb_address }}"
+controllerManager:
+  extraArgs:
+    "cluster-signing-duration": "87600h0m0s"
