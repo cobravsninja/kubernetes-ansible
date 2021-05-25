@@ -43,7 +43,16 @@
 
     - name: Generate server private key for each member
       openssl_privatekey:
-        path: "{{ artifacts_dir }}/{{ item }}.key"
+        path: "{{ artifacts_dir }}/{{ item }}-server.key"
+        type: RSA
+        size: 4096
+        state: present
+        force: True
+      with_items: "{{ groups['kuber_masters'] }}"
+
+    - name: Generate peer private key for each member
+      openssl_privatekey:
+        path: "{{ artifacts_dir }}/{{ item }}-peer.key"
         type: RSA
         size: 4096
         state: present
@@ -60,12 +69,28 @@
 
     - name: Generate server CSR for each member
       openssl_csr:
-        path: "{{ artifacts_dir }}/{{ item }}.csr"
-        privatekey_path: "{{ artifacts_dir }}/{{ item }}.key"
+        path: "{{ artifacts_dir }}/{{ item }}-server.csr"
+        privatekey_path: "{{ artifacts_dir }}/{{ item }}-server.key"
         common_name: "{{ item }}"
         key_usage:
           - digitalSignature
         extended_key_usage:
+          - serverAuth
+        subject_alt_name:
+          - IP:{{ hostvars[item]['ansible_host'] }}
+          - IP:127.0.0.1
+        force: True
+      with_items: "{{ groups['kuber_masters'] }}"
+
+    - name: Generate peer CSR for each member
+      openssl_csr:
+        path: "{{ artifacts_dir }}/{{ item }}-peer.csr"
+        privatekey_path: "{{ artifacts_dir }}/{{ item }}-peer.key"
+        common_name: "{{ item }}"
+        key_usage:
+          - digitalSignature
+        extended_key_usage:
+          - clientAuth
           - serverAuth
         subject_alt_name:
           - IP:{{ hostvars[item]['ansible_host'] }}
@@ -80,13 +105,23 @@
         key_usage:
           - digitalSignature
         extended_key_usage:
-          - serverAuth
+          - clientAuth
         force: True
 
-    - name: Generate an etcd member certificate signed with our own CA certificate
+    - name: Generate an etcd server certificate signed with our own CA certificate
       openssl_certificate:
-        path: "{{ artifacts_dir }}/{{ item }}.crt"
-        csr_path: "{{ artifacts_dir }}/{{ item }}.csr"
+        path: "{{ artifacts_dir }}/{{ item }}-server.crt"
+        csr_path: "{{ artifacts_dir }}/{{ item }}-server.csr"
+        ownca_path: "{{ etcd_ca_crt_file }}"
+        ownca_privatekey_path: "{{ etcd_ca_key_file }}"
+        provider: ownca
+        force: True
+      with_items: "{{ groups['kuber_masters'] }}"
+
+    - name: Generate an etcd peer certificate signed with our own CA certificate
+      openssl_certificate:
+        path: "{{ artifacts_dir }}/{{ item }}-peer.crt"
+        csr_path: "{{ artifacts_dir }}/{{ item }}-peer.csr"
         ownca_path: "{{ etcd_ca_crt_file }}"
         ownca_privatekey_path: "{{ etcd_ca_key_file }}"
         provider: ownca
@@ -111,6 +146,9 @@
       - kubelet
       - kubeadm
     containerd_package: containerd.io
+    #k8s_version: 1.20.7-00
+    k8s_version: 1.19.1-00
+    containerd_version: 1.4.4-1
 
   tasks:
     - name: Update apt repo and cache
@@ -187,7 +225,7 @@
     - debug: var=output.stdout_lines
 
     - name: Installing containerd
-      apt: "pkg={{ containerd_package }}"
+      apt: "pkg={{ containerd_package }}={{ containerd_version }}"
 
     - name: Holding containerd
       dpkg_selections:
@@ -214,7 +252,9 @@
 
     - name: Installing k8s-packages
       apt: 
-        pkg: "{{ k8s_packages }}"
+        pkg: "{{ item }}={{ k8s_version }}"
+      with_items:
+        - "{{ k8s_packages }}"
 
     - name: Holding k8s-packages
       dpkg_selections:
@@ -242,7 +282,8 @@
 - hosts: kuber_masters
   any_errors_fatal: True
   vars:
-    etcd_ver: v3.2.32
+    #etcd_ver: v3.2.32
+    etcd_ver: v3.4.3
     etcd_bin_dir: /opt/etcd/bin/
     etcd_data_dir: /var/lib/etcd
     etcd_data_dir_hostname: "{{ etcd_data_dir }}/{{ inventory_hostname }}"
@@ -251,8 +292,10 @@
     etcd_conf_dir: /etc/etcd
     etcd_ssl_dir: "{{ etcd_conf_dir }}/ssl"
     etcd_ssl_ca_crt: "{{ etcd_ssl_dir }}/ca.crt"
-    etcd_ssl_server_crt: "{{ etcd_ssl_dir }}/server.crt"
-    etcd_ssl_server_key: "{{ etcd_ssl_dir }}/server.key"
+    etcd_ssl_server_crt: "{{ etcd_ssl_dir }}/{{ inventory_hostname }}-server.crt"
+    etcd_ssl_server_key: "{{ etcd_ssl_dir }}/{{ inventory_hostname }}-server.key"
+    etcd_ssl_peer_crt: "{{ etcd_ssl_dir }}/{{ inventory_hostname }}-peer.crt"
+    etcd_ssl_peer_key: "{{ etcd_ssl_dir }}/{{ inventory_hostname }}-peer.key"
     etcd_ssl_client_crt: "{{ etcd_ssl_dir }}/client.crt"
     etcd_ssl_client_key: "{{ etcd_ssl_dir }}/client.key"
     calico_etcd_yaml_url: https://docs.projectcalico.org/manifests/calico-etcd.yaml
@@ -360,22 +403,41 @@
         group: root
         mode: 0644
 
-    - name: Copy over the `etcd` member certificate
+    - name: Copy over the `etcd` server certificate
       copy:
-        src: "{{ artifacts_dir }}/{{inventory_hostname}}.crt"
+        src: "{{ artifacts_dir }}/{{inventory_hostname}}-server.crt"
         remote_src: False
         dest: "{{ etcd_ssl_server_crt }}"
         owner: root
         group: root
         mode: 0644
 
-    - name: Copy over the `etcd` member key
+    - name: Copy over the `etcd` server key
       copy:
-        src: "{{ artifacts_dir }}/{{inventory_hostname}}.key"
+        src: "{{ artifacts_dir }}/{{inventory_hostname}}-server.key"
         remote_src: False
         dest: "{{ etcd_ssl_server_key }}"
         owner: root
         group: root
+        mode: 0600
+
+    - name: Copy over the `etcd` peer certificate
+      copy:
+        src: "{{ artifacts_dir }}/{{inventory_hostname}}-peer.crt"
+        remote_src: False
+        dest: "{{ etcd_ssl_peer_crt }}"
+        owner: root
+        group: root
+        mode: 0644
+
+    - name: Copy over the `etcd` peer key
+      copy:
+        src: "{{ artifacts_dir }}/{{inventory_hostname}}-peer.key"
+        remote_src: False
+        dest: "{{ etcd_ssl_peer_key }}"
+        owner: root
+        group: root
+        mode: 0600
         mode: 0600
 
     - name: Copy over the `etcd` client certificate

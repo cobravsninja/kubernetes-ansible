@@ -1,4 +1,4 @@
-data-dir: {{ etcd_data_dir_hostname }}
+data-dir: {{ etcd_data_dir }}
 name: {{ inventory_hostname }}
 initial-advertise-peer-urls: https://{{ hostvars[inventory_hostname]['ansible_host'] }}:{{ etcd_server_port }}
 listen-peer-urls: https://{{ hostvars[inventory_hostname]['ansible_host'] }}:{{ etcd_server_port }},https://127.0.0.1:{{ etcd_server_port }}
@@ -12,6 +12,6 @@ client-transport-security:
   key-file: {{ etcd_ssl_server_key }}
   trusted-ca-file: {{ etcd_ssl_ca_crt }}
 peer-transport-security:
-  cert-file: {{ etcd_ssl_server_crt }}
-  key-file: {{ etcd_ssl_server_key }}
+  cert-file: {{ etcd_ssl_peer_crt }}
+  key-file: {{ etcd_ssl_peer_key }}
   trusted-ca-file: {{ etcd_ssl_ca_crt }}
