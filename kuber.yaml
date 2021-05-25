@@ -146,8 +146,7 @@
       - kubelet
       - kubeadm
     containerd_package: containerd.io
-    #k8s_version: 1.20.7-00
-    k8s_version: 1.19.1-00
+    k8s_version: 1.21.1-00
     containerd_version: 1.4.4-1
 
   tasks:
@@ -282,8 +281,7 @@
 - hosts: kuber_masters
   any_errors_fatal: True
   vars:
-    #etcd_ver: v3.2.32
-    etcd_ver: v3.4.3
+    etcd_ver: v3.2.32
     etcd_bin_dir: /opt/etcd/bin/
     etcd_data_dir: /var/lib/etcd
     etcd_data_dir_hostname: "{{ etcd_data_dir }}/{{ inventory_hostname }}"
@@ -300,7 +298,7 @@
     etcd_ssl_client_key: "{{ etcd_ssl_dir }}/client.key"
     calico_etcd_yaml_url: https://docs.projectcalico.org/manifests/calico-etcd.yaml
     calico_etcd_yaml: /root/calico-etcd.yaml
-    calicoctl_ver: v3.18.1
+    calicoctl_ver: v3.19.1
     tmp_file: /tmp/etcd.tar.gz
     kuber_etc_dir: /etc/kubernetes
     kuber_pki_dir: "{{ kuber_etc_dir }}/pki"
